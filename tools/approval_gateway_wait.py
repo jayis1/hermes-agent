@@ -42,7 +42,7 @@ class _ApprovalEntry:
         self.cancelled: str | None = None
 
 
-def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
+def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str, timeout_override: float | None = None) -> str:
     """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
     elapses; returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
     slices so activity heartbeats reach the agent's inactivity tracker every ~10s —
@@ -55,7 +55,9 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     per-thread interrupt-cause channel (``get_interrupt_reason()``, a trusted fixed
     category), never inferred from message text, so the caller can report a
     withdrawn prompt without inventing a user refusal."""
-    deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+    deadline = time.monotonic() + max(
+        _ctx._get_approval_timeout() if timeout_override is None else timeout_override, 0
+    )
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
         while True:
@@ -98,7 +100,7 @@ def _finish(payload: dict, resolved: bool, choice: str | None, reason, **extra) 
     return {"resolved": resolved, "choice": choice, "reason": reason, **extra}
 
 
-def _await_coalesced_leader(session_key: str, leader, payload: dict):
+def _await_coalesced_leader(session_key: str, leader, payload: dict, *, timeout_override: float | None = None):
     """Wait on an already-pending identical approval instead of re-prompting.
     Adopts the leader's decision: ``session``/``always`` → approval (same dict
     shape as a direct resolution; persistence stays the caller's and is
@@ -110,7 +112,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
     state = _poll_event(leader.event, session_key,
                         interrupt_log="Coalesced approval wait interrupted — "
-                                      "returning deny for session %s")
+                                      "returning deny for session %s",
+                        timeout_override=timeout_override)
     cancelled = _cancel_cause(state, leader)
     if state == "interrupted":
         # Deny only OUR follower; the leader thread handles its own signal.
@@ -127,7 +130,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True, **extra)
 
 
-def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway") -> dict:
+def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway", timeout_override: float | None = None) -> dict:
     """Enqueue *approval_data*, notify the user, and block until resolved or timed
     out. Shared by the terminal command guard, the execute_code guard, the plugin
     escalation gate, and MCP elicitation. Returns ``{"resolved", "choice",
@@ -157,7 +160,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                        if e.data.get("command") == approval_data.get("command")
                        and list(e.data.get("pattern_keys") or []) == keys), None)
     if leader is not None and not preparing_terminal_approval():
-        adopted = _await_coalesced_leader(session_key, leader, payload)
+        adopted = _await_coalesced_leader(session_key, leader, payload, timeout_override=timeout_override)
         if adopted is not None:
             return adopted
 
@@ -207,7 +210,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         return {"resolved": False, "choice": None, "notify_failed": True}
 
     state = _poll_event(entry.event, session_key,
-                        interrupt_log="Approval wait interrupted — returning deny for session %s")
+                        interrupt_log="Approval wait interrupted — returning deny for session %s",
+                        timeout_override=timeout_override)
     cancelled = _cancel_cause(state, entry)
     if state == "interrupted":
         # Coalesced followers wake with the cause instead of a deny nobody issued.

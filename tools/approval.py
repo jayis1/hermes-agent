@@ -867,10 +867,26 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             }
             if smart_denied:
                 data["smart_denied"] = True
-            decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
+            # An api_server/webhook bridge may be registered even when no client is subscribed. Give a
+            # real client a short race-free opportunity to answer, then apply unattended_mode rather
+            # than parking the whole request on approvals.timeout. Headless ask-mode without a platform
+            # marker intentionally keeps the pending fallback (see test_cli_approval_exec_ask_leak).
+            unattended_ctx = next((ctx for ctx in _unattended_contexts() if ctx.name == "unattended"), None)
+            wait_timeout = 2.0 if unattended_ctx is not None else None
+            decision = _await_gateway_decision(
+                session_key, notify_cb, data, surface="gateway", timeout_override=wait_timeout)
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
                                description=description, outcome="notify_failed", noun=spec.noun)
+            # Consent contract: silence is NOT consent, and an explicit deny is a hard
+            # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
+            # relayed verbatim so the agent can adapt rather than only hearing "denied".
+            if not decision["resolved"] and unattended_ctx is not None:
+                if unattended_ctx.mode() == "deny":
+                    return _unattended_deny(command, unattended_ctx) or _denied(
+                        spec.gateway_refused, pattern_key=pattern_key, description=description,
+                        outcome="denied", noun=spec.noun)
+                return grant("once")
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
             # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
             # relayed verbatim so the agent can adapt rather than only hearing "denied".
