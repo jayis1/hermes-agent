@@ -75,6 +75,12 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str,
             heartbeat()
 
 
+def _poll_kwargs(timeout_override: float | None) -> dict:
+    """Only pass ``timeout_override`` when set, so tests and plugins that replace
+    ``_poll_event`` with the historical three-argument signature keep working."""
+    return {} if timeout_override is None else {"timeout_override": timeout_override}
+
+
 def _cancel_cause(state: str, entry) -> str | None:
     """Why the wait ended with nobody answering: the turn was interrupted (cause from the
     per-thread channel — a user /stop or a parent's delegation teardown), the entry was
@@ -113,7 +119,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict, *, timeout_
     state = _poll_event(leader.event, session_key,
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s",
-                        timeout_override=timeout_override)
+                        **_poll_kwargs(timeout_override))
     cancelled = _cancel_cause(state, leader)
     if state == "interrupted":
         # Deny only OUR follower; the leader thread handles its own signal.
@@ -211,7 +217,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
 
     state = _poll_event(entry.event, session_key,
                         interrupt_log="Approval wait interrupted — returning deny for session %s",
-                        timeout_override=timeout_override)
+                        **_poll_kwargs(timeout_override))
     cancelled = _cancel_cause(state, entry)
     if state == "interrupted":
         # Coalesced followers wake with the cause instead of a deny nobody issued.
