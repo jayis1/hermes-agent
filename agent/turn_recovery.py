@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import locale
 import math
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -1410,10 +1411,15 @@ def compute_error_backoff(
             _payload = _nested if isinstance(_nested, dict) else _error_body
             _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
     if _retry_after is not None:
-        # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
-        # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
-        # realistic provider reset windows while still rejecting pathological values. (#26293)
-        _retry_after = min(_retry_after, 600)
+        # A provider reset window is not allowed to consume an unattended run's whole
+        # request budget. The gateway's default run budget is 600s; keep at least 30s
+        # for persistence and the next heartbeat. Interactive callers retain the
+        # historical 600s provider ceiling.
+        _unattended_surface = os.getenv("HERMES_SESSION_PLATFORM", "").strip().lower() in {
+            "api_server", "webhook", "msgraph_webhook"
+        }
+        _retry_after_cap = 60 if _unattended_surface else 600
+        _retry_after = min(_retry_after, _retry_after_cap)
         if _retry_after <= 0:
             # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
             # past, which the parser clamps to 0.0) carries no usable wait —
