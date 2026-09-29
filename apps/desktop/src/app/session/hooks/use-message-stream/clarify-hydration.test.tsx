@@ -343,9 +343,7 @@ describe('clarify request stream hydration', () => {
 
     clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-live' })
 
-    act(() =>
-      stream.handleEvent({ payload: { running: false }, session_id: SID, type: 'session.info' })
-    )
+    act(() => stream.handleEvent({ payload: { running: false }, session_id: SID, type: 'session.info' }))
 
     expect($clarifyRequests.get()[SID]?.requestId).toBe('req-live')
 
